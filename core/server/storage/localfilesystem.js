@@ -18,23 +18,29 @@ localFileStore = _.extend(baseStore, {
     // Saves the image to storage (the file system)
     // - image is the express image object
     // - returns a promise which ultimately returns the full url to the uploaded image
-    'save': function (image) {
+    'save': function (file, filename) {
         var saved = when.defer(),
             targetDir = this.getTargetDir(config().paths.imagesPath),
+            stream,
             targetFilename;
 
-        this.getUniqueFileName(this, image, targetDir).then(function (filename) {
+        this.getUniqueFileName(this, filename, targetDir).then(function (filename) {
             targetFilename = filename;
             return nodefn.call(fs.mkdirs, targetDir);
         }).then(function () {
-            return nodefn.call(fs.copy, image.path, targetFilename);
-        }).then(function () {
-            return nodefn.call(fs.unlink, image.path).otherwise(errors.logError);
-        }).then(function () {
-            // The src for the image must be in URI format, not a file system path, which in Windows uses \
-            // For local file system storage can use relative path so add a slash
-            var fullUrl = (config().paths.subdir + '/' + path.relative(config().paths.appRoot, targetFilename)).replace(new RegExp('\\' + path.sep, 'g'), '/');
-            return saved.resolve(fullUrl);
+            file.on('end', function () {
+                var fullUrl = (config().paths.subdir + '/' + path.relative(config().paths.appRoot, targetFilename)).replace(new RegExp('\\' + path.sep, 'g'), '/');
+                return saved.resolve(fullUrl);
+            });
+
+            stream = fs.createWriteStream(targetFilename);
+
+            stream.on('error', function (e) {
+                errors.logError(e);
+                return saved.reject(e);
+            });
+
+            file.pipe(stream);
         }).otherwise(function (e) {
             errors.logError(e);
             return saved.reject(e);

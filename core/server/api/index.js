@@ -51,6 +51,10 @@ requestHandler = function (apiMethod) {
                 user: req.session && req.session.user
             };
 
+        if (req.BusBoy) {
+            options.BusBoy = req.BusBoy;
+        }
+
         return apiMethod.call(apiContext, options).then(function (result) {
             res.json(result || {});
             return cacheInvalidationHeader(req, result).then(function (header) {

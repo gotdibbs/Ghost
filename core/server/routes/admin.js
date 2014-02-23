@@ -43,7 +43,7 @@ module.exports = function (server) {
     server.get('/ghost/settings*', admin.settings);
     server.get('/ghost/debug/', admin.debug.index);
 
-    server.post('/ghost/upload/', middleware.busboy, admin.uploader);
+    server.post('/ghost/upload', middleware.busboy, admin.uploader);
 
     // redirect to /ghost and let that do the authentication to prevent redirects to /ghost//admin etc.
     server.get(/\/((ghost-admin|admin|wp-admin|dashboard|signin)\/?)$/, function (req, res) {

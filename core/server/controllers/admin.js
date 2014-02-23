@@ -44,24 +44,57 @@ function setSelected(list, name) {
 
 adminControllers = {
     'uploader': function (req, res) {
-        var type = req.files.uploadimage.type,
-            ext = path.extname(req.files.uploadimage.name).toLowerCase(),
-            store = storage.get_storage();
+        var busboy = req.BusBoy,
+            store = storage.get_storage(),
+            validMimeTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/svg+xml'],
+            validExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.svg', '.svgz'],
+            uploadError,
+            ext;
 
-        if ((type !== 'image/jpeg' && type !== 'image/png' && type !== 'image/gif' && type !== 'image/svg+xml')
-                || (ext !== '.jpg' && ext !== '.jpeg' && ext !== '.png' && ext !== '.gif' && ext !== '.svg' && ext !== '.svgz')) {
-            return res.send(415, 'Unsupported Media Type');
-        }
+        busboy.on('error', function (e) {
+            return res.send(e.statusCode || 500, e.message);
+        });
 
-        store
-            .save(req.files.uploadimage)
-            .then(function (url) {
-                return res.send(url);
-            })
-            .otherwise(function (e) {
-                errors.logError(e);
-                return res.send(500, e.message);
-            });
+        busboy.instance.on('file', function (fieldname, file, filename, encoding, mimetype) {
+            ext = path.extname(filename).toLowerCase();
+
+            // If the filename, fieldname, mimetype or extension is invalid, mark an error
+            if (!filename) {
+                uploadError = {
+                    errorCode: 500,
+                    message: 'Encountered invalid filename for uploaded image.'
+                };
+            } else if (fieldname !== 'uploadimage') {
+                uploadError  = {
+                    errorCode: 500,
+                    message: 'Encountered invalid fieldname in upload form.'
+                };
+            } else if (validMimeTypes.indexOf(mimetype) === -1 || validExtensions.indexOf(ext) === -1) {
+                uploadError = {
+                    errorCode: 415,
+                    message: 'Unsupported Media Type'
+                };
+            }
+
+            if (uploadError) {
+                // Flush the stream
+                file.resume();
+                // Send the error
+                return res.send(uploadError.errorCode || 500, uploadError);
+            }
+
+            store
+                .save(file, filename, encoding)
+                .then(function (url) {
+                    return res.send(url);
+                })
+                .otherwise(function (e) {
+                    errors.logError(e);
+                    return res.send(500, e.message);
+                });
+        });
+
+        busboy.start();
     },
     'login': function (req, res) {
         /*jslint unparam:true*/

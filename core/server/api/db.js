@@ -45,84 +45,119 @@ db = {
         });
     },
     'importContent': function (options) {
-        var databaseVersion;
+        var busboy = options.BusBoy,
+            deferred = when.defer(),
+            foundFile = false,
+            uploadError,
+            parser;
 
-        if (!options.importfile || !options.importfile.path || options.importfile.name.indexOf('json') === -1) {
-            /**
-             * Notify of an error if it occurs
-             *
-             * - If there's no file (although if you don't select anything, the input is still submitted, so
-             *   !req.files.importfile will always be false)
-             * - If there is no path
-             * - If the name doesn't have json in it
-             */
-            return when.reject({errorCode: 500, message: 'Please select a .json file to import.'});
-        }
+        busboy.on('error', function (e) {
+            deferred.reject({
+                errorCode: 500,
+                message: e.message
+            });
+        });
 
-        return api.settings.read({ key: 'databaseVersion' }).then(function (setting) {
-            return when(setting.value);
-        }, function () {
-            return when('001');
-        }).then(function (version) {
-            databaseVersion = version;
-            // Read the file contents
-            return nodefn.call(fs.readFile, options.importfile.path);
-        }).then(function (fileContents) {
-            var importData,
-                error = '',
-                tableKeys = _.keys(schema);
+        busboy.instance.on('end', function () {
+            if (foundFile) {
+                return;
+            }
 
-            // Parse the json data
-            try {
-                importData = JSON.parse(fileContents);
-            } catch (e) {
+            deferred.reject({
+                errorCode: 500,
+                message: 'Please select a .json file to import.'
+            });
+        });
+
+        busboy.instance.on('file', function (fieldname, file, filename) {
+            if (!filename || filename.indexOf('json') === -1) {
+                uploadError = {
+                    errorCode: 500,
+                    message: 'Please select a .json file to import.'
+                };
+            } else if (fieldname !== 'importfile') {
+                uploadError  = {
+                    errorCode: 500,
+                    message: 'Encountered invalid fieldname in upload form.'
+                };
+            }
+
+            if (uploadError) {
+                // Flush the stream.
+                file.resume();
+                // Send the error.
+                return deferred.reject(uploadError);
+            }
+
+            foundFile = true;
+
+            parser = new busboy.JSONParser();
+
+            parser.on('parseError', function (e) {
                 errors.logError(e, "API DB import content", "check that the import file is valid JSON.");
-                return when.reject(new Error("Failed to parse the import JSON file"));
-            }
+                return deferred.reject(new Error("Failed to parse the import JSON file"));
+            });
 
-            if (!importData.meta || !importData.meta.version) {
-                return when.reject(new Error("Import data does not specify version"));
-            }
+            parser.on('parseComplete', function (importData) {
+                console.log(importData);
+                api.settings.read({ key: 'databaseVersion' }).then(function (setting) {
+                    return when(setting.value);
+                }, function () {
+                    return when('001');
+                }).then(function (version) {
+                    var error = '',
+                        tableKeys = _.keys(schema);
 
-            _.each(tableKeys, function (constkey) {
-                _.each(importData.data[constkey], function (elem) {
-                    var prop;
-                    for (prop in elem) {
-                        if (elem.hasOwnProperty(prop)) {
-                            if (schema[constkey].hasOwnProperty(prop)) {
-                                if (!_.isNull(elem[prop])) {
-                                    if (elem[prop].length > schema[constkey][prop].maxlength) {
+                    if (!importData.meta || !importData.meta.version) {
+                        return deferred.reject(new Error("Import data does not specify version"));
+                    }
+
+                    _.each(tableKeys, function (constkey) {
+                        _.each(importData.data[constkey], function (elem) {
+                            var prop;
+                            for (prop in elem) {
+                                if (elem.hasOwnProperty(prop)) {
+                                    if (schema[constkey].hasOwnProperty(prop)) {
+                                        if (!_.isNull(elem[prop])) {
+                                            if (elem[prop].length > schema[constkey][prop].maxlength) {
+                                                error += error !== "" ? "<br>" : "";
+                                                error += "Property '" + prop + "' exceeds maximum length of " + schema[constkey][prop].maxlength + " (element:" + constkey + " / id:" + elem.id + ")";
+                                            }
+                                        } else {
+                                            if (!schema[constkey][prop].nullable) {
+                                                error += error !== "" ? "<br>" : "";
+                                                error += "Property '" + prop + "' is not nullable (element:" + constkey + " / id:" + elem.id + ")";
+                                            }
+                                        }
+                                    } else {
                                         error += error !== "" ? "<br>" : "";
-                                        error += "Property '" + prop + "' exceeds maximum length of " + schema[constkey][prop].maxlength + " (element:" + constkey + " / id:" + elem.id + ")";
-                                    }
-                                } else {
-                                    if (!schema[constkey][prop].nullable) {
-                                        error += error !== "" ? "<br>" : "";
-                                        error += "Property '" + prop + "' is not nullable (element:" + constkey + " / id:" + elem.id + ")";
+                                        error += "Property '" + prop + "' is not allowed (element:" + constkey + " / id:" + elem.id + ")";
                                     }
                                 }
-                            } else {
-                                error += error !== "" ? "<br>" : "";
-                                error += "Property '" + prop + "' is not allowed (element:" + constkey + " / id:" + elem.id + ")";
                             }
-                        }
+                        });
+                    });
+
+                    if (error !== "") {
+                        return deferred.reject(new Error(error));
                     }
+                    // Import for the current version
+                    return dataImport(version, importData);
+                }).then(function importSuccess() {
+                    return api.settings.updateSettingsCache();
+                }).then(function () {
+                    return deferred.resolve({message: 'Posts, tags and other data successfully imported'});
+                }).otherwise(function importFailure(error) {
+                    return deferred.reject({errorCode: 500, message: error.message || error});
                 });
             });
 
-            if (error !== "") {
-                return when.reject(new Error(error));
-            }
-            // Import for the current version
-            return dataImport(databaseVersion, importData);
-
-        }).then(function importSuccess() {
-            return api.settings.updateSettingsCache();
-        }).then(function () {
-            return when.resolve({message: 'Posts, tags and other data successfully imported'});
-        }).otherwise(function importFailure(error) {
-            return when.reject({errorCode: 500, message: error.message || error});
+            file.pipe(parser);
         });
+
+        busboy.start();
+
+        return deferred.promise;
     },
     'deleteAllContent': function () {
         return when(dataProvider.deleteAllContent())
